@@ -21,7 +21,6 @@ freely, subject to the following restrictions:
    3. This notice may not be removed or altered from any source
    distribution.
 */
-
 #include "soloud.h"
 #include "soloud_thread.h"
 
@@ -59,6 +58,7 @@ namespace SoLoud
         HANDLE bufferEndEvent;
         HANDLE audioProcessingDoneEvent;
         class VoiceCallback *voiceCb;
+		class EngineCallback *engineCb;
         Thread::ThreadHandle thread;
         Soloud *soloud;
         int samples;
@@ -101,10 +101,35 @@ namespace SoLoud
         // The voice may have to be destroyed and re-created to recover from
         // the error.  The callback arguments report which buffer was being
         // processed when the error occurred, and its HRESULT code.
-        void __stdcall OnVoiceError(void *aBufferContext, HRESULT aError) {}
+        void __stdcall OnVoiceError(void *aBufferContext, HRESULT aError) {
+			//printf("Got voice error: 0x%x\r\n", aError);
+		}
 
         HANDLE mBufferEndEvent;
     };
+
+	static void xaudio2Cleanup(Soloud *aSoloud);
+	result xaudio2_init(Soloud *aSoloud, unsigned int aFlags, unsigned int aSamplerate, unsigned int aBuffer, unsigned int aChannels);
+
+	class EngineCallback : public IXAudio2EngineCallback
+	{
+	public:
+		EngineCallback() : IXAudio2EngineCallback() {}
+		virtual ~EngineCallback() {}
+
+	private:
+		// Called by XAudio2 just before an audio processing pass begins.
+		void __stdcall OnProcessingPassStart() {}
+
+		// Called just after an audio processing pass ends.
+		void __stdcall OnProcessingPassEnd() {}
+
+		// Called in the event of a critical system error which requires XAudio2
+		// to be closed down and restarted.  The error code is given in Error.
+		void __stdcall OnCriticalError(HRESULT hr) {
+			// TODO reset the engine
+		}
+	};
 
     static void xaudio2Thread(LPVOID aParam)
     {
@@ -219,6 +244,11 @@ namespace SoLoud
         {
             return UNKNOWN_ERROR;
         }
+		data->engineCb = new EngineCallback();
+		if (FAILED(data->xaudio2->RegisterForCallbacks(data->engineCb)))
+		{
+			return UNKNOWN_ERROR;
+		}
         data->voiceCb = new VoiceCallback(data->bufferEndEvent);
         if (FAILED(data->xaudio2->CreateSourceVoice(&data->sourceVoice, 
                    &format, XAUDIO2_VOICE_NOSRC|XAUDIO2_VOICE_NOPITCH, 2.f, data->voiceCb))) 
