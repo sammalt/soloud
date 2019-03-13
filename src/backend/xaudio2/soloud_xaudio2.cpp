@@ -57,12 +57,14 @@ namespace SoLoud
         IXAudio2SourceVoice *sourceVoice;
         HANDLE bufferEndEvent;
         HANDLE audioProcessingDoneEvent;
+		HANDLE criticalErrorEvent;
         class VoiceCallback *voiceCb;
 		class EngineCallback *engineCb;
         Thread::ThreadHandle thread;
         Soloud *soloud;
         int samples;
         UINT32 bufferLengthBytes;
+		unsigned int sampleRate;
     };
 
     class VoiceCallback : public IXAudio2VoiceCallback
@@ -114,7 +116,7 @@ namespace SoLoud
 	class EngineCallback : public IXAudio2EngineCallback
 	{
 	public:
-		EngineCallback() : IXAudio2EngineCallback() {}
+		EngineCallback(XAudio2Data *aData) : IXAudio2EngineCallback(), mData(aData) {}
 		virtual ~EngineCallback() {}
 
 	private:
@@ -127,14 +129,19 @@ namespace SoLoud
 		// Called in the event of a critical system error which requires XAudio2
 		// to be closed down and restarted.  The error code is given in Error.
 		void __stdcall OnCriticalError(HRESULT hr) {
-			// TODO reset the engine
+			// signal the audio thread that we got an error
+			// TODO check HRESULT?
+			SetEvent(mData->criticalErrorEvent);
 		}
+
+		XAudio2Data *mData;
 	};
 
     static void xaudio2Thread(LPVOID aParam)
     {
         XAudio2Data *data = static_cast<XAudio2Data*>(aParam);
         int bufferIndex = 0;
+		HANDLE handles[2] = { data->bufferEndEvent, data->criticalErrorEvent };
         while (WAIT_OBJECT_0 != WaitForSingleObject(data->audioProcessingDoneEvent, 0)) 
         {
             XAUDIO2_VOICE_STATE state;
@@ -153,7 +160,60 @@ namespace SoLoud
                 }
                 data->sourceVoice->GetState(&state);
             }
-            WaitForSingleObject(data->bufferEndEvent, INFINITE);
+			if (WAIT_OBJECT_0 + 1 == WaitForMultipleObjects(2, handles, FALSE, INFINITE)) {
+				// TODO reset the wait handle
+				// A critical error occurred, so tear down the audio graph:
+				if (0 != data->sourceVoice)
+				{
+					data->sourceVoice->Stop();
+					data->sourceVoice->FlushSourceBuffers();
+				}
+				if (0 != data->xaudio2)
+				{
+					data->xaudio2->StopEngine();
+				}
+				if (0 != data->sourceVoice)
+				{
+					data->sourceVoice->DestroyVoice();
+				}
+				if (0 != data->masteringVoice)
+				{
+					data->masteringVoice->DestroyVoice();
+				}
+				if (0 != data->xaudio2)
+				{
+					data->xaudio2->Release();
+				}
+				// Recreate the audio graph:
+				WAVEFORMATEX format;
+				ZeroMemory(&format, sizeof(WAVEFORMATEX));
+				format.nChannels = 2;
+				format.nSamplesPerSec = data->sampleRate;
+				format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+				format.nAvgBytesPerSec = data->sampleRate * sizeof(float)*format.nChannels;
+				format.nBlockAlign = sizeof(float)*format.nChannels;
+				format.wBitsPerSample = sizeof(float) * 8;
+				// TODO: DO SOMETHING WITH THE ERRORS! AAARGH!
+				if (FAILED(XAudio2Create(&data->xaudio2)))
+				{
+					//return UNKNOWN_ERROR;
+				}
+				if (FAILED(data->xaudio2->CreateMasteringVoice(&data->masteringVoice,
+					format.nChannels, data->sampleRate)))
+				{
+					//return UNKNOWN_ERROR;
+				}
+				if (FAILED(data->xaudio2->RegisterForCallbacks(data->engineCb)))
+				{
+					//return UNKNOWN_ERROR;
+				}
+				if (FAILED(data->xaudio2->CreateSourceVoice(&data->sourceVoice,
+					&format, XAUDIO2_VOICE_NOSRC | XAUDIO2_VOICE_NOPITCH, 2.f, data->voiceCb)))
+				{
+					//return UNKNOWN_ERROR;
+				}
+				data->sourceVoice->Start();
+			}
         }
     }
 
@@ -185,6 +245,10 @@ namespace SoLoud
         {
             delete data->voiceCb;
         }
+		if (0 != data->engineCb)
+		{
+			delete data->engineCb;
+		}
         if (0 != data->masteringVoice)
         {
             data->masteringVoice->DestroyVoice();
@@ -200,6 +264,7 @@ namespace SoLoud
                 delete[] data->buffer[i];
             }
         }
+		CloseHandle(data->criticalErrorEvent);
         CloseHandle(data->bufferEndEvent);
         CloseHandle(data->audioProcessingDoneEvent);
         delete data;
@@ -227,6 +292,11 @@ namespace SoLoud
         {
             return UNKNOWN_ERROR;
         }
+		data->criticalErrorEvent = CreateEvent(0, FALSE, FALSE, 0);
+		if (0 == data->criticalErrorEvent)
+		{
+			return UNKNOWN_ERROR;
+		}
         WAVEFORMATEX format;
         ZeroMemory(&format, sizeof(WAVEFORMATEX));
         format.nChannels = 2;
@@ -244,7 +314,7 @@ namespace SoLoud
         {
             return UNKNOWN_ERROR;
         }
-		data->engineCb = new EngineCallback();
+		data->engineCb = new EngineCallback(data);
 		if (FAILED(data->xaudio2->RegisterForCallbacks(data->engineCb)))
 		{
 			return UNKNOWN_ERROR;
@@ -261,6 +331,7 @@ namespace SoLoud
             data->buffer[i] = new float[aBuffer * format.nChannels];
         }
         data->samples = aBuffer;
+		data->sampleRate = aSamplerate;
         data->soloud = aSoloud;
         aSoloud->postinit(aSamplerate, aBuffer * format.nChannels, aFlags, 2);
         data->thread = Thread::createThread(xaudio2Thread, data);
