@@ -86,6 +86,11 @@ newoption {
 }
 
 newoption {
+	trigger		  = "with-wasapi-only",
+	description = "Include *only* WASAPI backend in build"
+}
+
+newoption {
 	trigger		  = "with-xaudio2",
 	description = "Include XAudio2 backend in build"
 }
@@ -200,6 +205,18 @@ end
 
 if _OPTIONS["with-wasapi"] then
 	WITH_WASAPI = 1
+end
+
+if _OPTIONS["with-wasapi-only"] then
+	WITH_SDL = 0
+	WITH_SDL_STATIC = 0
+	WITH_SDL2_STATIC = 0
+	WITH_PORTAUDIO = 0
+	WITH_OPENAL = 0
+	WITH_XAUDIO2 = 0
+	WITH_WINMM = 0
+	WITH_WASAPI = 1
+	WITH_OSS = 0
 end
 
 if _OPTIONS["with-sdl-only"] then
